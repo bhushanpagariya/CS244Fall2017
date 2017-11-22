@@ -4,24 +4,64 @@
 #include <ESP8266WiFi.h>
 #include <ESP8266HTTPClient.h>
 #include "SparkFunLIS3DH.h"
-#include "Wire.h"
 #include "SPI.h"
-#include <vector>
-using namespace std;
-
-String deviceName = "CS244";
-LIS3DH myIMU; //Default constructor is I2C, addr 0x19.
-MAX30105 particleSensor;
 
 // WiFi settings
-const char *ssid = "AndroidAP";
+const char *ssid = "UCInet Mobile Access";
 
-String serverEndPoint = "http://ec2-35-166-1-233.us-west-2.compute.amazonaws.com/server_acc_code.php";
-HTTPClient http;    //Declare object of class HTTPClient
-int numReadingsPerBatch = 80;
+const char* host = "ec2-35-167-126-243.us-west-2.compute.amazonaws.com";
 
-int numSamples = 0;
-vector<String> jsonReadings;
+MAX30105 particleSensor;
+LIS3DH myIMU; //Default constructor is I2C, addr 0x19.
+
+void initAccelerometer()
+{
+  myIMU.settings.accelSampleRate = 50;  //Hz.  Can be: 0,1,10,25,50,100,200,400,1600,5000 Hz
+  myIMU.settings.accelRange = 2;      //Max G force readable.  Can be: 2, 4, 8, 16
+
+  myIMU.settings.adcEnabled = 0;
+  myIMU.settings.tempEnabled = 0;
+  myIMU.settings.xAccelEnabled = 1;
+  myIMU.settings.yAccelEnabled = 1;
+  myIMU.settings.zAccelEnabled = 1;
+  myIMU.begin();
+}
+
+void initParticleSensor()
+{
+  // Initialize sensor
+  if (!particleSensor.begin(Wire, I2C_SPEED_FAST)) //Use default I2C port, 400kHz speed
+  {
+    Serial.println("MAX30105 was not found. Please check wiring/power. ");
+    while (1);
+  }
+
+  //Setup to sense a nice looking saw tooth on the plotter
+  byte ledBrightness = 0x1F; //Options: 0=Off to 255=50mA
+  byte sampleAverage = 1; //Options: 1, 2, 4, 8, 16, 32
+  byte ledMode = 3; //Options: 1 = Red only, 2 = Red + IR, 3 = Red + IR + Green
+  byte sampleRate = 50; //Options: 50, 100, 200, 400, 800, 1000, 1600, 3200
+  int pulseWidth = 411; //Options: 69, 118, 215, 411
+  int adcRange = 4096; //Options: 2048, 4096, 8192, 16384
+
+  particleSensor.setup(ledBrightness, sampleAverage, ledMode, sampleRate, pulseWidth, adcRange); //Configure sensor with these settings
+  particleSensor.setSampleRate(0x00);
+
+    //Take an average of IR readings at power up
+  const byte avgAmount = 64;
+  long baseValue = 0;
+  for (byte x = 0 ; x < avgAmount ; x++)
+  {
+    //Read the IR value
+    baseValue += particleSensor.getIR(); 
+  }
+  baseValue /= avgAmount;
+
+  //Pre-populate the plotter so that the Y scale is close to IR values
+  for (int x = 0 ; x < 500 ; x++)
+    Serial.println(baseValue);
+
+}
 
 void connectToWiFi()
 {
@@ -37,7 +77,8 @@ void connectToWiFi()
     Serial.print("Mac address : ");
     Serial.print(MAC_char);
 
-    WiFi.begin(ssid, "bhushan123");
+    WiFi.begin(ssid);
+    // WiFi.begin(ssid);
     while (WiFi.status() != WL_CONNECTED)
     {
         delay(500);
@@ -52,87 +93,48 @@ void connectToWiFi()
 void setup()
 {
   Serial.begin(115200);
-  Serial.println("Program started");
+  Serial.println("Initializing...");
+
   connectToWiFi();
+  
+  // Init Particle Sensor
+  initParticleSensor();
+  // Init LIS3DH Sensor
+  initAccelerometer();
 
-  // Initializing Accelerometer
-  //Call .begin() to configure the IMU
-  //Accel sample rate and range effect interrupt time and threshold values!!!
-  myIMU.settings.accelSampleRate = 50;  //Hz.  Can be: 0,1,10,25,50,100,200,400,1600,5000 Hz
-  myIMU.settings.accelRange = 2;      //Max G force readable.  Can be: 2, 4, 8, 16
-  myIMU.settings.adcEnabled = 0;
-  myIMU.settings.tempEnabled = 0;
-  myIMU.settings.xAccelEnabled = 1;
-  myIMU.settings.yAccelEnabled = 1;
-  myIMU.settings.zAccelEnabled = 1;
-  myIMU.begin();
+  char * tempStr = (char *)malloc(15000);
+  uint32_t ir_val;
+  uint32_t red_val;
+  int maxSample = 150;
+  int index = 0;
+  while(index<200){
 
-  // Initializing MAX30105
-  byte ledBrightness = 0x1F; //Options: 0=Off to 255=50mA
-  byte sampleAverage = 1; //Options: 1, 2, 4, 8, 16, 32
-  byte ledMode = 3; //Options: 1 = Red only, 2 = Red + IR, 3 = Red + IR + Green
-  byte sampleRate = 50; //Options: 50, 100, 200, 400, 800, 1000, 1600, 3200
-  int pulseWidth = 411; //Options: 69, 118, 215, 411
-  int adcRange = 4096; //Options: 2048, 4096, 8192, 16384
-  particleSensor.setup(ledBrightness, sampleAverage, ledMode, sampleRate, pulseWidth, adcRange); //Configure sensor with these settings
-
-  while(1) {
-    // Create JSON for X,Y and Z values
-    String xval = "{\"x\":[";
-    String yval = "\"y\":[";
-    String zval = "\"z\":[";
-    String ir = "{\"ir\":[";
-    String red = "\"red\":[";
-    
     int currentSample = 0;
-    int maxSample = 100;
-          
-    while(currentSample < maxSample-1) {   
-      // Fetch accelerometer values
-      xval += myIMU.readFloatAccelX();
-      xval += ",";
-      yval += myIMU.readFloatAccelY();
-      yval += ",";
-      zval += myIMU.readFloatAccelZ();
-      zval += ",";
-      // Fetch IR and RED values from MAX30105 sensor
-      ir += particleSensor.getIR();
-      ir += ",";
-      red += particleSensor.getRed();
-      red += ",";    
+    int start = 0;
+    
+    while(currentSample < maxSample) {
+      particleSensor.getIRRed(ir_val, red_val);
+      sprintf(tempStr+start, "%d,%d,", ir_val, red_val);
+      while(tempStr[start]!='\0')
+        start++;
+
+      String temp = (String(myIMU.readFloatAccelX())+","+myIMU.readFloatAccelY()+","+myIMU.readFloatAccelZ()+",");
+      temp.toCharArray(tempStr+start, temp.length()+1);
+      start+=temp.length();
       currentSample++;
     }
-    xval += myIMU.readFloatAccelX();
-    xval += "],";
-    yval += myIMU.readFloatAccelY();
-    yval += "],";
-    zval += myIMU.readFloatAccelZ();
-    zval += "],";
-    ir += particleSensor.getIR();
-    ir += "],";
-    red += particleSensor.getRed();
-    red += "]}";
-    xval += yval;
-    xval += zval;
-    xval += ir;
-    xval += red;
+    index++;
+    HTTPClient http;    
+    http.begin("http://ec2-35-167-126-243.us-west-2.compute.amazonaws.com/nojson.php");
+    http.addHeader("Content-Type", "text/plain");
 
-    HTTPClient http;    //Declare object of class HTTPClient
-       
-    http.begin("http://ec2-35-167-126-243.us-west-2.compute.amazonaws.com/main.php");      //Specify request destination
-    http.addHeader("Content-Type", "application/json");  //Specify content-type header
-       
-    int httpCode = http.POST(xval);   //Send the request
-    String payload = http.getString();   //Get the response payload
-      
-    Serial.println(httpCode);   //Print HTTP return code
-    Serial.println(payload);    //Print request response payload
-       
-    http.end();  //Close connection
+    int httpCode = http.POST(tempStr);
+  Serial.println(httpCode);
+    http.end();
   }
+  Serial.println("Done");
 }
 
 void loop()
 {
-  // Nothing to be callend in loop
 }

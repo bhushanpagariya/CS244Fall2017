@@ -1,15 +1,16 @@
 <?php
-//var_dump($_POST); 
 if($_SERVER['REQUEST_METHOD'] == 'POST') {
-  $post = json_decode(file_get_contents('php://input'));
+  $post = file_get_contents('php://input');
+  echo(strlen($post));
   $filename = "/var/www/html/data.txt";
   $file = fopen( $filename, "a" );
   if( $file == false ) {
           echo ( "Error in opening new file" );
           exit();
    }
-  for($i=0;$i<count($post->ir);$i++){
-          fwrite( $file, $post->ir[$i].",".$post->red[$i].",".$post->x[$i].",".$post->y[$i].",".$post->z[$i]."\n");
+  $arr = explode(",", $post);
+  for($i=0;$i<count($arr)-1;$i+=5){
+          fwrite( $file, $arr[$i].",".$arr[$i+1].",".$arr[$i+2].",".$arr[$i+3].",".$arr[$i+4]."\n");
   }
   echo "Success!!!!!!";
   fclose( $file );
